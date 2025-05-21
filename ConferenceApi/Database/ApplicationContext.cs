@@ -53,21 +53,35 @@ public class ApplicationContext : IdentityDbContext<User>
                 Id = 2,
                 RoleId = adminRoleId,
                 ClaimType = "Permission",
-                ClaimValue = "Read"
+                ClaimValue = "Modify"
             },
             new IdentityRoleClaim<string>
             {
                 Id = 3,
                 RoleId = adminRoleId,
                 ClaimType = "Permission",
-                ClaimValue = "Write"
+                ClaimValue = "History"
             },
             new IdentityRoleClaim<string>
             {
                 Id = 4,
                 RoleId = adminRoleId,
                 ClaimType = "Permission",
-                ClaimValue = "Delete"
+                ClaimValue = "Read"
+            },
+            new IdentityRoleClaim<string>
+            {
+                Id = 5,
+                RoleId = adminRoleId,
+                ClaimType = "Permission",
+                ClaimValue = "Modify"
+            },
+            new IdentityRoleClaim<string>
+            {
+                Id = 6,
+                RoleId = adminRoleId,
+                ClaimType = "Permission",
+                ClaimValue = "History"
             }
         );
     }

@@ -101,6 +101,23 @@ public class UnitOfWork : IDisposable
             throw new InvalidOperationException("A transaction has already been started.");
         _transaction = await _context.Database.BeginTransactionAsync();
     }
+    public async Task RollbackTransactionAsync()
+    {
+        if (_transaction is not null)
+            throw new InvalidOperationException("A transaction has already been rolledBack.");
+        try
+        {
+            await _transaction.RollbackAsync();
+            _transaction.Dispose();
+            _transaction = null;
+        }
+        catch (Exception)
+        {
+            if (_transaction is not null)
+                await _transaction.RollbackAsync();
+            throw;
+        }
+    }
     public async Task CommitAsync()
     {
         if (_transaction is null)

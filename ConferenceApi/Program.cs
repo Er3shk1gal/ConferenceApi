@@ -10,9 +10,14 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Serilog;
+using Serilog.Exceptions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
+
+#region Swagger
 
 builder.Services.AddSwaggerGen(c =>
 {
@@ -62,7 +67,10 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-builder.Services.AddOpenApi();
+
+#endregion
+
+#region Database
 
 builder.Services.AddDbContext<ApplicationContext>(x =>
 {
@@ -75,44 +83,70 @@ builder.Services.AddDbContext<ApplicationContext>(x =>
     x.UseNpgsql($"Server={hostname}:{port};Database={name};Uid={username};Pwd={password};");
 });
 
+builder.Services.AddScoped(typeof(GenericRepository<>));
+builder.Services.AddScoped<UnitOfWork>(sp => new UnitOfWork(sp.GetRequiredService<ApplicationContext>()));
+
+
+#endregion
+
+#region Auth
+
 builder.Services.AddIdentity<User, IdentityRole>(options =>
-{
-    options.Password.RequireDigit = true;
-    options.Password.RequiredLength = 8;
-    options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequireUppercase = true;
-})
-.AddEntityFrameworkStores<ApplicationContext>()
-.AddDefaultTokenProviders();
+    {
+        options.Password.RequireDigit = true;
+        options.Password.RequiredLength = 8;
+        options.Password.RequireNonAlphanumeric = false;
+        options.Password.RequireUppercase = true;
+    })
+    .AddEntityFrameworkStores<ApplicationContext>()
+    .AddDefaultTokenProviders();
 
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var key = Encoding.ASCII.GetBytes(jwtSettings["Key"]!);
 
 builder.Services.AddAuthentication(options =>
-{
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-})
-.AddJwtBearer(options =>
-{
-    options.TokenValidationParameters = new TokenValidationParameters
     {
-        ValidateIssuerSigningKey = true,
-        IssuerSigningKey = new SymmetricSecurityKey(key),
-        ValidateIssuer = true,
-        ValidateAudience = true,
-        ValidIssuer = jwtSettings["Issuer"],
-        ValidAudience = jwtSettings["Audience"]
-    };
-});
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(key),
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidIssuer = jwtSettings["Issuer"],
+            ValidAudience = jwtSettings["Audience"]
+        };
+    });
 
-builder.Services.AddScoped(typeof(GenericRepository<>));
-builder.Services.AddScoped<UnitOfWork>(sp => new UnitOfWork(sp.GetRequiredService<ApplicationContext>()));
 
 builder.Services.AddScoped<IJWTService,JWTService>();
 
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("ReadPolicy", policy => 
+        policy.RequireClaim("Permission", "Read"));
+        
+    options.AddPolicy("ModifyPolicy", policy => 
+        policy.RequireClaim("Permission", "Modify"));
+        
+    options.AddPolicy("AdminPolicy", policy => 
+        policy.RequireRole("Admin"));
+        
+    options.AddPolicy("HistoryPolicy", policy => 
+        policy.RequireClaim("Permission", "History"));
+});
+
+#endregion
+
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
+
+#region CORS
 
 builder.Services.AddCors(options =>
 {
@@ -120,27 +154,18 @@ builder.Services.AddCors(options =>
         policy =>
         {
             policy.AllowAnyOrigin()
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
+                .AllowAnyHeader()
+                .AllowAnyMethod();
         });
     
 });
 
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("ReadPolicy", policy => 
-        policy.RequireClaim("Permission", "Read"));
-        
-    options.AddPolicy("WritePolicy", policy => 
-        policy.RequireClaim("Permission", "Write"));
-        
-    options.AddPolicy("AdminPolicy", policy => 
-        policy.RequireRole("Admin"));
-        
-    options.AddPolicy("DeletePolicy", policy => 
-        policy.RequireClaim("Permission", "Delete"));
-});
+#endregion
 
+
+
+
+builder.Host.UseSerilog();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -186,3 +211,19 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 app.Run();
+
+void configureLogging(){
+    var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+    var configuration = new ConfigurationBuilder()
+        .AddJsonFile("appsettings.json",optional:false,reloadOnChange:true).Build();
+    Console.WriteLine(environment);
+    Console.WriteLine(configuration);
+    Log.Logger = new LoggerConfiguration()
+        .Enrich.FromLogContext()
+        .Enrich.WithExceptionDetails()
+        .WriteTo.Debug()
+        .WriteTo.Console()
+        .Enrich.WithProperty("Environment",environment)
+        .ReadFrom.Configuration(configuration)
+        .CreateLogger();
+}

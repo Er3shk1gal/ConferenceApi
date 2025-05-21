@@ -8,6 +8,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace ConferenceApi.Services
 {
@@ -24,79 +25,122 @@ namespace ConferenceApi.Services
             _userManager = userManager;
         }
 
-        public async Task<bool> TransferAsync(ClaimsPrincipal principal, TransferRequest request)
+        public async Task<Account> CreateAccountAsync(User user)
         {
-            _logger.LogInformation("Transfer from {FromUser} to {ToUser}", principal.Identity?.Name, request.Username);
+            try
+            {
+                Account account = new Account
+                {
+                    Balance = 1000,
+                    User = user,
+                    Currency = "USD",
+                    Name = "Main",
+                    
+                };
+                EntityEntry<Account> entry = await _unitOfWork.AccountRepository.InsertAsync(account);
+                if (await _unitOfWork.SaveAsync())
+                {
+                    return entry.Entity;
+                }
+                throw new ArgumentException("Account not created");
+                
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, e.Message);
+                throw;
+            }
+        }
+
+        public async Task<bool> TransferAsync(User user, TransferRequest request)
+        {
+            _logger.LogInformation("Transfer from {FromUser} to {ToUser}", user.UserName, request.Username);
 
             await _unitOfWork.BeginTransactionAsync();
             
             try
             {
-                var account = await _unitOfWork.AccountRepository.FindByIdAsync(request.Account);
+                var account = await _unitOfWork.AccountRepository.GetByIDAsync(request.Account);
                 if (account == null)
-                    throw new Exception("Account not found");
-
-                // Z-BANK transfer
-                if (request.Bank.Equals("Z-BANK", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Implement Z-BANK API call here
-                    var result = true; // Placeholder for Z-BANK API call
-                    
-                    if (result)
-                        await SaveHistoryAsync(account, request);
-                    
-                    await transaction.CommitAsync();
-                    return result;
+                    throw new KeyNotFoundException("Account not found");
                 }
 
-                // Check if user is admin
-                var isAdmin = (await _userService.GetUserByUsernameAsync(principal.Identity?.Name))
-                    .Roles.Any(r => r.Name == "ROLE_ADMIN");
+               
 
-                if (!isAdmin)
+                if ( !_userManager.GetRolesAsync(user).Result.Contains("Admin"))
                 {
                     if (account.Balance < request.Amount)
+                    {
                         throw new Exception("Insufficient funds");
-
+                    }
                     account.Balance -= request.Amount;
-                    await _unitOfWork.Accounts.UpdateAsync(account);
+                    _unitOfWork.AccountRepository.Update(account);
                 }
-
-                var recipient = await _userService.GetUserByUsernameAsync(request.Username);
-                var recipientAccount = recipient.Accounts.First();
-                recipientAccount.Balance += request.Amount;
-                await _unitOfWork.Accounts.UpdateAsync(recipientAccount);
-
-                await SaveHistoryAsync(account, request);
-                await _unitOfWork.CommitAsync();
+        
                 
-                return true;
+                var recipientAccount = user.Accounts.First();
+                recipientAccount.Balance += request.Amount;
+                _unitOfWork.AccountRepository.Update(recipientAccount);
+
+              
+                await _unitOfWork.HistoryRepository.InsertAsync(new History
+                {
+                    Amount = request.Amount,
+                    Date = request.Date.Ticks,
+                    Info = request.Info,
+                    Operation = request.Operation,
+                    Initiator = account,
+                    Receiver = request.Username
+                });
+                
+                if (await _unitOfWork.SaveAsync())
+                {
+                    await _unitOfWork.CommitAsync();
+                    return true;
+                }
+                await _unitOfWork.RollbackTransactionAsync();
+                return false;
             }
-            catch
+            catch(Exception e)
             {
-                await transaction.RollbackAsync();
+                await _unitOfWork.RollbackTransactionAsync();
+                _logger.LogError(e, e.Message);
                 throw;
             }
         }
 
-        private async Task SaveHistoryAsync(Account initiator, TransferRequest request)
+
+        public async Task<(List<HistoryDto> Histories, int TotalCount)> GetHistoryAsync(int page, int size, Guid? accountId, DateTime from, DateTime to)
         {
-            var history = new History
+            try
             {
-                Amount = request.Amount,
-                Date = request.Date.Ticks,
-                Info = request.Info,
-                Operation = request.Operation,
-                Initiator = initiator,
-                Receiver = request.Username
-            };
-
-            await _unitOfWork.Histories.AddAsync(history);
-        }
-
-        public async Task<PagedModel<HistoryDto>> GetHistoryAsync(int page, int size, Guid? accountId, DateFilter filter)
-        {
-            throw new NotImplementedException();
+                var query = _unitOfWork.HistoryRepository.Get();
+    
+                var totalItems = await query.CountAsync();
+    
+                var pagedHistories = await query
+                    .Skip((page - 1) * size)
+                    .Take(size)
+                    .ToListAsync();
+       
+                List<HistoryDto> result = pagedHistories.Select<History,HistoryDto>(history => new HistoryDto()
+                {
+                    Info = history.Info,
+                    Amount = history.Amount,
+                    Date = history.Date,
+                    Operation = history.Operation,
+                    InitiatorName = history.Initiator.Name,
+                    Reciever = history.Receiver
+                }).ToList();
+        
+                return (result, totalItems);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, e.Message);
+                throw;
+            }
         }
     }
 }
